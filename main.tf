@@ -178,10 +178,18 @@ resource "aws_cloudwatch_log_metric_filter" "ecs_service_restarts" {
   pattern = "{ $.detail.lastStatus = \"STOPPED\" }"
 
   metric_transformation {
-    namespace     = var.ecs_service_restarts_metric_namespace
-    name          = var.ecs_service_restarts_metric_name
-    value         = "1"
-    default_value = "0"
+    namespace = var.ecs_service_restarts_metric_namespace
+    name      = var.ecs_service_restarts_metric_name
+    value     = "1"
+    # No default_value here - confirmed live (2026-09-02):
+    # "InvalidParameterException: Invalid metric transformation: dimensions
+    # and default value are mutually exclusive properties". Makes sense on
+    # reflection - a "0 when absent" default is undefined for an unbounded
+    # dimension space (every possible ClusterArn+ServiceGroup pair), unlike
+    # the un-dimensioned OOM filter above where a single default value is
+    # well-defined. Consumers alarming on this metric should use
+    # treat_missing_data = "missing" (no restart events = no datapoint, not
+    # an implicit zero), not "notBreaching".
 
     # Both dimension values are taken verbatim from the event, not
     # string-manipulated (metric filter dimensions can only reference raw
