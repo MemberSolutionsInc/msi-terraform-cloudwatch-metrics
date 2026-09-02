@@ -45,6 +45,45 @@ variable "oom_metric_name" {
 }
 
 # ---------------------------------------------------------------------------
+# ECS per-service restart/churn detection (EventBridge -> Log Group -> Metric
+# Filter). ECS has no native per-service "restart count" the way EKS pods
+# do - ECS/ContainerInsights RestartCount is dimensioned by {TaskId,
+# ContainerName, ClusterName, TaskDefinitionFamily}, not {ClusterName,
+# ServiceName}, and TaskId is a new random value every deployment/restart,
+# so it can never be usefully alarmed on per-service. This derives a real
+# per-service metric the same way OOM detection above does: every task
+# belonging to an ECS-service-managed task group that stops gets counted,
+# dimensioned by the values an alarm can actually hold constant
+# (ClusterArn + the literal "service:<name>" group string, both taken
+# verbatim from the event - not string-manipulated, since CloudWatch Logs
+# metric filter dimensions can only reference raw JSON field values).
+# ---------------------------------------------------------------------------
+
+variable "enable_ecs_service_restarts" {
+  description = "Whether to create the EventBridge rule, log group, and metric filter that derive a per-service ECS task-stop metric from ECS Task State Change events."
+  type        = bool
+  default     = false
+}
+
+variable "ecs_service_restarts_cluster_arns" {
+  description = "Optional list of ECS cluster ARNs to filter service-restart detection to. If empty, the EventBridge rule matches ECS Task State Change events across all clusters in the account/region."
+  type        = list(string)
+  default     = []
+}
+
+variable "ecs_service_restarts_metric_namespace" {
+  description = "CloudWatch namespace for the derived ECS per-service task-stop metric."
+  type        = string
+  default     = "MSI/ECS"
+}
+
+variable "ecs_service_restarts_metric_name" {
+  description = "Name of the derived CloudWatch metric emitted when a service-managed ECS task stops - dimensioned by ClusterArn and ServiceGroup (the literal \"service:<name>\" value from the event, not just the service name)."
+  type        = string
+  default     = "ServiceTaskStopped"
+}
+
+# ---------------------------------------------------------------------------
 # Generic log-derived metric filters
 # ---------------------------------------------------------------------------
 

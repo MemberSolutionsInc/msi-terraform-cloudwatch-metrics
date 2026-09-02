@@ -13,6 +13,16 @@ output "ecs_oom_log_group_name" {
   value       = local.create_ecs_oom_detection ? aws_cloudwatch_log_group.ecs_oom[0].name : null
 }
 
+output "ecs_service_restarts_metric_namespace" {
+  description = "CloudWatch namespace of the derived per-service ECS task-stop metric (null if enable_ecs_service_restarts = false). Consumed by the sibling msi-terraform-cloudwatch-alarms module."
+  value       = local.create_ecs_service_restarts ? var.ecs_service_restarts_metric_namespace : null
+}
+
+output "ecs_service_restarts_metric_name" {
+  description = "Name of the derived per-service ECS task-stop metric (null if enable_ecs_service_restarts = false). Consumed by the sibling msi-terraform-cloudwatch-alarms module."
+  value       = local.create_ecs_service_restarts ? var.ecs_service_restarts_metric_name : null
+}
+
 output "custom_metric_filter_ids" {
   description = "Map of custom_metric_filters key to the resulting aws_cloudwatch_log_metric_filter resource ID."
   value       = { for k, v in aws_cloudwatch_log_metric_filter.custom : k => v.id }

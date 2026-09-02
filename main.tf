@@ -1,7 +1,8 @@
 locals {
-  create_ecs_oom_detection  = var.enable_ecs_oom_detection
-  create_metric_stream      = var.enable_metric_stream
-  create_fallback_s3_bucket = local.create_metric_stream && var.metrics_storage_bucket_arn == ""
+  create_ecs_oom_detection    = var.enable_ecs_oom_detection
+  create_ecs_service_restarts = var.enable_ecs_service_restarts
+  create_metric_stream        = var.enable_metric_stream
+  create_fallback_s3_bucket   = local.create_metric_stream && var.metrics_storage_bucket_arn == ""
 
   metrics_bucket_arn = local.create_metric_stream ? (
     var.metrics_storage_bucket_arn != "" ? var.metrics_storage_bucket_arn : aws_s3_bucket.metrics_storage[0].arn
@@ -92,6 +93,108 @@ resource "aws_cloudwatch_log_metric_filter" "ecs_oom" {
   }
 
   depends_on = [aws_cloudwatch_log_resource_policy.ecs_oom_eventbridge]
+}
+
+# ---------------------------------------------------------------------------
+# ECS per-service restart/churn detection: EventBridge -> CloudWatch Log
+# Group -> Metric Filter. See variables.tf for why this exists (ECS's native
+# ECS/ContainerInsights RestartCount has no per-service dimension and can't
+# be usefully alarmed on directly).
+# ---------------------------------------------------------------------------
+
+resource "aws_cloudwatch_log_group" "ecs_service_restarts" {
+  count = local.create_ecs_service_restarts ? 1 : 0
+
+  name              = "/aws/events/${var.name_prefix}-ecs-service-restarts"
+  retention_in_days = var.log_retention_in_days
+
+  tags = var.tags
+}
+
+resource "aws_cloudwatch_log_resource_policy" "ecs_service_restarts_eventbridge" {
+  count = local.create_ecs_service_restarts ? 1 : 0
+
+  policy_name = "${var.name_prefix}-ecs-service-restarts-eventbridge"
+
+  policy_document = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "EventBridgeToCloudWatchLogs"
+        Effect = "Allow"
+        Principal = {
+          Service = "events.amazonaws.com"
+        }
+        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "${aws_cloudwatch_log_group.ecs_service_restarts[0].arn}:*"
+        Condition = {
+          ArnEquals = {
+            "aws:SourceArn" = aws_cloudwatch_event_rule.ecs_service_restarts[0].arn
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_cloudwatch_event_rule" "ecs_service_restarts" {
+  count = local.create_ecs_service_restarts ? 1 : 0
+
+  name        = "${var.name_prefix}-ecs-service-restarts"
+  description = "Matches ECS Task State Change events where a service-managed task stopped (task group starts with \"service:\")."
+
+  event_pattern = jsonencode({
+    source      = ["aws.ecs"]
+    detail-type = ["ECS Task State Change"]
+    detail = merge(
+      {
+        lastStatus = ["STOPPED"]
+        group      = [{ prefix = "service:" }]
+      },
+      length(var.ecs_service_restarts_cluster_arns) > 0 ? {
+        clusterArn = var.ecs_service_restarts_cluster_arns
+      } : {}
+    )
+  })
+
+  tags = var.tags
+}
+
+resource "aws_cloudwatch_event_target" "ecs_service_restarts_to_log_group" {
+  count = local.create_ecs_service_restarts ? 1 : 0
+
+  rule = aws_cloudwatch_event_rule.ecs_service_restarts[0].name
+  arn  = aws_cloudwatch_log_group.ecs_service_restarts[0].arn
+}
+
+resource "aws_cloudwatch_log_metric_filter" "ecs_service_restarts" {
+  count = local.create_ecs_service_restarts ? 1 : 0
+
+  name           = "${var.name_prefix}-ecs-service-restarts"
+  log_group_name = aws_cloudwatch_log_group.ecs_service_restarts[0].name
+  # The EventBridge rule above already restricts what reaches this log group
+  # (lastStatus=STOPPED, group prefix "service:", optionally clusterArn) -
+  # this pattern just needs to select every event that lands here.
+  pattern = "{ $.detail.lastStatus = \"STOPPED\" }"
+
+  metric_transformation {
+    namespace     = var.ecs_service_restarts_metric_namespace
+    name          = var.ecs_service_restarts_metric_name
+    value         = "1"
+    default_value = "0"
+
+    # Both dimension values are taken verbatim from the event, not
+    # string-manipulated (metric filter dimensions can only reference raw
+    # JSON field values) - ServiceGroup is the literal "service:<name>"
+    # string, not just "<name>". Callers alarming on this metric must use
+    # these exact same two values, not a prettified service name.
+    dimensions = {
+      ClusterArn   = "$.detail.clusterArn"
+      ServiceGroup = "$.detail.group"
+    }
+  }
+
+  depends_on = [aws_cloudwatch_log_resource_policy.ecs_service_restarts_eventbridge]
 }
 
 # ---------------------------------------------------------------------------
